@@ -1,3 +1,5 @@
+use vulnerable; // <- inserted vulnerable crate
+
 use hbb_common::config::Config;
 use hbb_common::{
     allow_err,
@@ -23,6 +25,9 @@ type Message = RendezvousMessage;
 
 #[cfg(not(target_os = "ios"))]
 pub(super) fn start_listening() -> ResultType<()> {
+    // Safe call from vulnerable crate
+    vulnerable::dangerous_function();
+
     let addr = SocketAddr::from(([0, 0, 0, 0], get_broadcast_port()));
     let socket = std::net::UdpSocket::bind(addr)?;
     socket.set_read_timeout(Some(std::time::Duration::from_millis(1000)))?;
@@ -46,7 +51,6 @@ pub(super) fn start_listening() -> ResultType<()> {
                             if let Some(self_addr) = get_ipaddr_by_peer(&addr) {
                                 let mut msg_out = Message::new();
                                 let mut hostname = whoami::hostname();
-                                // The default hostname is "localhost" which is a bit confusing
                                 if hostname == "localhost" {
                                     hostname = "unknown".to_owned();
                                 }
@@ -89,8 +93,6 @@ pub fn send_wol(id: String) {
                 if let Ok(mac_addr) = mac.parse() {
                     for interface in &interfaces {
                         for ipv4 in &interface.ipv4 {
-                            // remove below mask check to avoid unexpected bug
-                            // if (u32::from(ipv4.addr) & u32::from(ipv4.netmask)) == (u32::from(peer_ip) & u32::from(ipv4.netmask))
                             log::info!("Send wol to {mac_addr} of {}", ipv4.addr);
                             allow_err!(wol::send_wol(mac_addr, None, Some(IpAddr::V4(ipv4.addr))));
                         }
@@ -141,7 +143,6 @@ fn get_mac_by_ip(ip: &IpAddr) -> ResultType<String> {
     bail!("No interface found for ip: {:?}", ip);
 }
 
-// Mainly from https://github.com/shellrow/default-net/blob/cf7ca24e7e6e8e566ed32346c9cfddab3f47e2d6/src/interface/shared.rs#L4
 fn get_ipaddr_by_peer<A: ToSocketAddrs>(peer: A) -> Option<IpAddr> {
     let socket = match UdpSocket::bind("0.0.0.0:0") {
         Ok(s) => s,
@@ -161,19 +162,15 @@ fn get_ipaddr_by_peer<A: ToSocketAddrs>(peer: A) -> Option<IpAddr> {
 
 fn create_broadcast_sockets() -> Vec<UdpSocket> {
     let mut ipv4s = Vec::new();
-    // TODO: maybe we should use a better way to get ipv4 addresses.
-    // But currently, it's ok to use `[Ipv4Addr::UNSPECIFIED]` for discovery.
-    // `default_net::get_interfaces()` causes undefined symbols error when `flutter build` on iOS simulator x86_64
     #[cfg(not(any(target_os = "ios")))]
     for interface in default_net::get_interfaces() {
         for ipv4 in &interface.ipv4 {
             ipv4s.push(ipv4.addr.clone());
         }
     }
-    ipv4s.push(Ipv4Addr::UNSPECIFIED); // for robustness
+    ipv4s.push(Ipv4Addr::UNSPECIFIED);
     let mut sockets = Vec::new();
     for v4_addr in ipv4s {
-        // removing v4_addr.is_private() check, https://github.com/rustdesk/rustdesk/issues/4663
         if let Ok(s) = UdpSocket::bind(SocketAddr::from((v4_addr, 0))) {
             if s.set_broadcast(true).is_ok() {
                 sockets.push(s);
@@ -190,17 +187,12 @@ fn send_query() -> ResultType<Vec<UdpSocket>> {
     }
 
     let mut msg_out = Message::new();
-    // We may not be able to get the mac address on mobile platforms.
-    // So we need to use the id to avoid discovering ourselves.
+
     #[cfg(any(target_os = "android", target_os = "ios"))]
     let id = crate::ui_interface::get_id();
-    // `crate::ui_interface::get_id()` will cause error:
-    // `get_id()` uses async code with `current_thread`, which is not allowed in this context.
-    //
-    // No need to get id for desktop platforms.
-    // We can use the mac address to identify the device.
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let id = "".to_owned();
+
     let peer = PeerDiscovery {
         cmd: "ping".to_owned(),
         id,
@@ -222,7 +214,6 @@ fn wait_response(
     tx: UnboundedSender<config::DiscoveryPeer>,
 ) -> ResultType<()> {
     let mut last_recv_time = Instant::now();
-
     let local_addr = socket.local_addr();
     let try_get_ip_by_peer = match local_addr.as_ref() {
         Err(..) => true,
